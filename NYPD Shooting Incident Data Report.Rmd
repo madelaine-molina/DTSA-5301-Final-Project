@@ -1,0 +1,138 @@
+---
+title: "NYPD Shooting Incident Data Report"
+date: "3/1/2024"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this report, I will be importing and analyzing historic NYPD shooting incident data as reported by the City of New York.
+
+Data description: List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
+
+This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. This data can be used by the public to explore the nature of shooting/criminal activity. Please refer to the attached data footnotes for additional information about this dataset.
+
+## Step 0: Import Library
+
+The following libraries will be required:
+
+```{r library_in, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(survival)
+```
+
+## Step 1: Load Data
+
+Import data from source.
+
+```{r import, message=FALSE}
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+data <- read_csv(url_in)
+summary(data)
+```
+
+## Step 2: Data Cleaning
+
+I am going to do some data cleaning by changing variables to the appropriate formats and removing columns which are not needed for my analysis. There is also some missing data, which I will classify as "unknown".
+
+```{r cleaning}
+data_2 <- data
+data_2 = subset(data_2, PERP_AGE_GROUP!="1020" & PERP_AGE_GROUP!="224" 
+                & PERP_AGE_GROUP!="940" & VIC_AGE_GROUP!="1022")
+data_2["PERP_AGE_GROUP"][data_2["PERP_AGE_GROUP"] == "(null)"] <- "UNKNOWN"
+data_2["PERP_SEX"][data_2["PERP_SEX"] == "(null)"] <- "U"
+data_2["PERP_RACE"][data_2["PERP_RACE"] == "(null)"] <- "UNKNOWN"
+
+data_2 <- data_2 %>%
+  select(-c(LOC_OF_OCCUR_DESC,JURISDICTION_CODE,LOC_CLASSFCTN_DESC,LOCATION_DESC,
+            X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat)) %>%
+  replace_na(list(PERP_AGE_GROUP = "UNKNOWN", PERP_SEX = "U", PERP_RACE = "UNKNOWN")) %>%
+  mutate(INCIDENT_KEY = as.character(INCIDENT_KEY),OCCUR_DATE = mdy(OCCUR_DATE), 
+         BORO = as.factor(BORO), PRECINCT = as.factor(PRECINCT), 
+         PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP), PERP_RACE = as.factor(PERP_RACE), 
+         PERP_SEX = as.factor(PERP_SEX), VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP), 
+         VIC_RACE = as.factor(VIC_RACE), VIC_SEX = as.factor(VIC_SEX))
+
+summary(data_2)
+```
+
+## Step 3: Analysis & Visualization
+
+1. My first question that I want to investigate further is if there is a relationship between the race of the victim and the race of the perpetrator.
+
+```{r graph_1, message=FALSE}
+race_combinations <- data_2 %>%
+  filter(PERP_RACE!= "UNKNOWN", VIC_RACE!= "UNKNOWN") %>%
+  group_by(PERP_RACE, VIC_RACE) %>%
+  summarise(Count = n(), .groups = 'drop')
+
+total_counts <- sum(race_combinations$Count)
+race_combinations <- race_combinations %>%
+  mutate(Proportion = Count / total_counts)
+
+ggplot(race_combinations, aes(x = VIC_RACE, y = PERP_RACE, size = Proportion)) +
+  geom_point(alpha = 0.7) +
+  scale_size_continuous(range = c(2,12)) +
+  theme_minimal() +
+  labs(title = "NYPD Shootings: Perpetrator Race vs. Victim Race",
+       subtitle = "Circle size reflects the proportion of shootings",
+       x = "Victim Race",
+       y = "Perpetrator Race",
+       size = "Proportion") +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  guides(size = "none")
+```
+There does appear to be some correlation between the race of the victim and the race of the perpetrator. Additional analysis would need to be completed to determine if these findings are statistically significant. It would also help to know the overall demographics of New York City and the NYPD.
+
+2. Violence committed by police officers is a topic that is frequently in the news. I would like to see if it appears that the rate of shootings is increasing over time.
+
+```{r graph_2}
+data_graph_2 <- data_2 %>%
+  arrange(OCCUR_DATE)%>%
+  mutate(TotalShootingsToDate = cumsum(!is.na(OCCUR_DATE))) %>%
+  mutate(DailyRateOfChange = c(0, diff(TotalShootingsToDate)))
+
+ggplot(data_graph_2, aes(x = OCCUR_DATE, y = TotalShootingsToDate)) +
+  geom_line() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year") +
+  theme_minimal() +
+  labs(title = "Total Shootings Over Time",
+       x = "Date",
+       y = "Total Shootings Reported") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+Looking at cumulative shootings over time, it does not appear that the rate of shootings is necessarily increasing or decreasing significantly in New York City. I think that it would help to have population data to put shootings in terms of "per 100,000", for example.
+
+3. Next I want to build a model using logistic regression to determine if race, sex, or age are a predictor of whether a shooting victim will survive.
+
+```{r model}
+logistic_model <- glm(STATISTICAL_MURDER_FLAG ~ VIC_RACE + VIC_SEX + VIC_AGE_GROUP, 
+                      data_2, family = "binomial")
+summary(logistic_model)
+```
+The logistic regression model predicts the log-odds of the event STATISTICAL_MURDER_FLAG based on race, sex, and age group variables. Significant coefficients and their associated significance codes indicate the direction and strength of the relationships. From the results, it appears that race and gender do not have a significant impact on the log-odds of fatality, but as may have been expected, fatality is more likely for individuals who are older.
+
+## Step 4: Identifying Bias
+
+One source of bias could be in the way the data is reported and reviewed. Is the reporting police officer responsible for filling out the incident report? Is the report reviewed by an unbiased individual? This could impact the data that is reported versus what is omitted. For example, I noticed than the race of the perpetrator was unreported or "unknown" for 2,2442 observations, which was the case for only 48 of the victims reported. Is that information omitted by simple oversight or could it be intentional?
+
+Because of all the media attention on this topic, I was also likely biased in my analysis. I tried to mitigate this by simply asking myself what I was most curious to learn from the data, as opposed to setting out to prove a specific point. I wrote the code not knowing what I would find.
+
+## Appendix: Session Info
+
+```{r session_info}
+sessionInfo()
+```
